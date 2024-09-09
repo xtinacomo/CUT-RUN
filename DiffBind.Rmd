@@ -1,0 +1,90 @@
+
+
+```{r}
+## Note need to use conda env diffbind which has DiffBind 3.4.10 loaded into R
+#BiocManager::install("DiffBind")
+library(DiffBind)
+library(tidyverse)
+library(rtracklayer)
+```
+
+
+```{r}
+setwd("/Users/christinacomo/OneDrive - The University of Colorado Denver/10xVisium/Cut and Run/DiffBind/")
+getwd()
+```
+
+
+```{r}
+samples <- read.csv("./SampleSheet.csv")
+```
+
+
+```{r}
+myc <- dba(sampleSheet=samples)
+myc
+```
+
+```{r}
+head(myc$peaks[[1]])
+dba.plotHeatmap(myc)
+```
+
+```{r}
+myc.counted <- dba.count(myc)
+myc.counted
+```
+
+```{r}
+dba.plotHeatmap(myc.counted)
+
+```
+
+```{r}
+dba.plotPCA(myc.counted,  attributes=DBA_TISSUE, label=DBA_ID)
+myc.counted
+```
+
+```{r}
+#deseq2
+myc.counted <- dba.contrast(myc.counted, categories=DBA_ALL_ATTRIBUTES)
+myc.counted
+```
+
+```{r}
+#edgeR and all methods
+myc.analysed <- dba.analyze(myc.counted)
+myc.analysed <- dba.analyze(myc.analysed, method=DBA_DESEQ2)
+```
+
+
+```{r}
+dba.show(myc.analysed, bContrasts=T)
+```
+
+```{r}
+dba.plotVenn(myc.analysed,contrast=1,method=DBA_EDGER)
+```
+
+```{r}
+dba.show(myc.analysed, bContrasts=T)
+```
+
+```{r}
+dba.plotVenn(myc.analysed,contrast=1,method=c(DBA_EDGER, DBA_DESEQ2))
+dba.plotHeatmap(myc.analysed, contrast=1)
+```
+
+
+```{r}
+dba.plotMA(myc.analysed)
+dba.plotVolcano(myc.analysed)
+saveRDS(myc.analysed, "./myc.analyzed.diffbind.rds")
+```
+
+```{r}
+# No differential peaks between control and mutants, combine and merge controls, mutants and all isotypes to look at peaks
+nrow(myc[["peaks"]][[6]])
+?DiffBind::dba
+```
+
