@@ -1,0 +1,104 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+```{r}
+BiocManager::install('GenomicRanges')
+library(GenomicRanges)
+BiocManager::install('XML')
+library(XML)
+
+```
+
+
+```{r}
+install.packages('httr')
+library(httr)
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+library(BiocManager)
+BiocManager::install('dbplyr')
+library(dbplyr)
+BiocManager::install('plyranges')
+library(plyranges)
+BiocManager::install("biomaRt")
+library(biomaRt)
+BiocManager::install('ChIPpeakAnno')
+library(ChIPpeakAnno)
+BiocManager::install('Repitools')
+library(Repitools)
+```
+
+```{r}
+library(biomaRt)
+mart <- useMart(biomart = 'ensembl', dataset='mmusculus_gene_ensembl')
+```
+
+
+```{r}
+annoData <- getAnnotation(mart, featureType = 'TSS')
+```
+
+```{r}
+annoData[1:2]
+saveRDS(annoData, file = "/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/Cut and Run/RDSfiles/annoData.GRCm38.RDS")
+annoData<- readRDS('/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/Cut and Run/RDSfiles/annoData.GRCm38.RDS')
+```
+
+```{r}
+library(ChIPpeakAnno)
+library(GenomicRanges)
+library(rtracklayer)
+
+read_bed('/Users/christinacomo/Downloads/MycTag_R1.seacr.peaks.stringent.bed')
+scr <- read_bed_graph('/Users/christinacomo/Downloads/MycTag_R1.seacr.peaks.stringent.bed')
+head(scr)
+```
+
+```{r}
+scr$score <- as.numeric(scr$score)
+```
+
+```{r}
+help("annotatePeakInBatch")
+myGrange.anno <- annotatePeakInBatch(scr, 
+                                     AnnotationData=annoData, 
+                                     output="nearestBiDirectionalPromoters",
+                                     bindingRegion = c(-100000,100000))
+head(myGrange.anno)  
+```
+
+```{r}
+length(scr) 
+```
+
+```{r}
+length(myGrange.anno)
+```
+
+```{r}
+BiocManager::install("org.Mm.eg.db")
+library(org.Mm.eg.db)
+myGrange.anno <- addGeneIDs(annotatedPeak=myGrange.anno, 
+                        orgAnn="org.Mm.eg.db", 
+                        IDs2Add="symbol")
+```
+
+```{r}
+## Problem is that there are duplicate peak names which is what annoGR2DF uses for rownames which cannot be duplicates.
+## So first will make these names all unique with make.names() function
+myGrange.anno@ranges@NAMES <- make.names(myGrange.anno@ranges@NAMES, unique=TRUE)
+mydf <- annoGR2DF(myGrange.anno)
+tail(mydf)
+```
+
+```{r}
+write.table(mydf, file = "/Users/christinacomo/Desktop/Myc_annotated.narrowPeak", sep = "\t", quote = F, col.names = NA)
+```
+
+```{r}
+write.csv(mydf, "/Users/christinacomo/Desktop/Myc_annotated.seacr.bidirect.csv", sep = "\t", quote = F, col.names = NA)
+```
+

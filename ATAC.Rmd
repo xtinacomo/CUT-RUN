@@ -1,0 +1,525 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+#BiocManager::install("BSgenome.Mmusculus.UCSC.mm10")
+
+BiocManager::install("biovizBase")
+BiocManager::install("EnsDb.Mmusculus.v75")
+BiocManager::install('BiocGenerics')
+
+library(BiocGenerics)
+library(biovizBase)
+library(EnsDb.Mmusculus.v75)
+library(Signac)
+library(Seurat)
+library(biomaRt)
+```
+
+```{r}
+getwd()
+```
+
+
+```{r}
+install.packages("hdf5r")
+library(hdf5r)
+data.dir <- "/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/GEO.GSM5091383_ATACseq/chromassay/filtered_peak_bc_matrix.h5"
+counts <- Read10X_h5(data.dir)
+```
+
+```{r}
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  fragments = '/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/GEO.GSM5091383_ATACseq/chromassay/fragments.tsv.gz',
+  min.cells = 10,
+  min.features = 200
+)
+```
+
+```{r}
+atac.so <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks"
+)
+```
+```{r}
+atac.so
+```
+
+```{r}
+atac.so[["peaks"]]
+```
+
+```{r}
+granges(atac.so)
+```
+
+```{r}
+# extract gene annotations from EnsDb
+library(EnsDb.Mmusculus.v75)
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v75)
+```
+
+```{r}
+# change to UCSC style since the data was mapped to hg19
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "mm10"
+head(annotations)
+```
+
+```{r}
+new_row <- data.frame(
+  seqnames = 'chr3',
+  start = '34560381',
+  end = '34677993',
+  width = '117,612',
+  strand = '+',
+  tx_id = 'ENSMUSG00000105265',
+  gene_name = 'Sox2ot',
+  gene_id = 'ENSMUSG00000105265',
+  gene_biotype = 'non_protein_coding',
+  type = 'exon')
+new_row
+```
+
+
+```{r}
+new_row1 <- data.frame(
+  seqnames = 'chr14',
+  start = '16430839',
+  end = '17082331',
+  width = '117,612',
+  strand = '-',
+  tx_id = 'ENSMUSG00000105265',
+  gene_name = 'Rarb',
+  gene_id = 'ENSMUSG00000105265',
+  gene_biotype = 'protein_coding',
+  type = 'exon')
+new_row1
+```
+
+
+```{r}
+ann1 <- data.frame(annotations)
+head(ann1)
+```
+
+```{r}
+annotations2 <- rbind(ann1, new_row, new_row1)
+annotations2
+```
+
+```{r}
+annotations.gr.2 <- makeGRangesFromDataFrame(annotations2, keep.extra.columns = T)
+annotations.gr.2
+```
+
+
+```{r}
+# add the gene information to the object
+Annotation(atac.so) <- annotations.gr.2
+help("getAnnotation")
+```
+
+```{r}
+# compute nucleosome signal score per cell
+atac.so <- NucleosomeSignal(object = atac.so)
+# compute TSS enrichment score per cell
+atac.so <- TSSEnrichment(object = atac.so, fast = FALSE)
+```
+
+```{r}
+DensityScatter(atac.so, x = 'nCount_peaks', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+```
+
+```{r}
+atac.so$high.tss <- ifelse(atac.so$TSS.enrichment > 3, 'High', 'Low')
+TSSPlot(atac.so, group.by = 'high.tss') + NoLegend()
+
+```
+
+
+```{r}
+atac.so$nucleosome_group <- ifelse(atac.so$nucleosome_signal > 4, 'NS > 4', 'NS < 4')
+#FragmentHistogram(object = atac.so, group.by = 'nucleosome_group')
+```
+
+```{r, fig.width=5, fig.height=2}
+VlnPlot(
+  object = atac.so,
+  features = c('nCount_peaks', 'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal', 'pct_reads_in_peaks'),
+  pt.size = 0.1,
+  ncol = 5
+)
+```
+```{r}
+atac.so <- subset(
+  x = atac.so,
+  subset = nCount_peaks > 2000 &
+    nCount_peaks < 70000 &
+    nucleosome_signal < 1.5 &
+    TSS.enrichment > 3
+)
+atac.so
+```
+
+```{r}
+# We exclude the first dimension as this is typically correlated with sequencing depth
+atac.so <- RunTFIDF(atac.so)
+atac.so <- FindTopFeatures(atac.so, min.cutoff = 'q0')
+atac.so <- RunSVD(atac.so)
+```
+
+```{r}
+DepthCor(atac.so)
+```
+
+```{r}
+atac.so <- RunUMAP(object = atac.so, reduction = 'lsi', dims = 2:30)
+atac.so <- FindNeighbors(object = atac.so, reduction = 'lsi', dims = 2:30)
+atac.so <- FindClusters(object = atac.so, verbose = FALSE, algorithm = 3)
+DimPlot(object = atac.so, label = TRUE) + NoLegend()
+```
+```{r}
+library(Signac)
+gene.activities <- GeneActivity(atac.so)
+```
+
+```{r}
+library(Seurat)
+# add the gene activity matrix to the Seurat object as a new assay and normalize it
+atac.so[['RNA']] <- CreateAssayObject(counts = gene.activities)
+atac.so <- NormalizeData(
+  object = atac.so,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(atac.so$nCount_RNA)
+)
+```
+```{r}
+save(atac.so, '/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/GEO.GSM5091383_ATACseq/chromassay/atac.so.rds')
+
+atac.so <- readRDS('/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/GEO.GSM5091383_ATACseq/chromassay/atac.so.rds')
+```
+
+```{r}
+library(Seurat)
+DefaultAssay(atac.so) <- 'RNA'
+
+FeaturePlot(
+  object = atac.so,
+  features = c('Sox2', "Neurod1", "Eomes", "Pax6", "Neurog1"),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 2
+)
+```
+```{r}
+# Load the pre-processed scRNA-seq data for PBMCs
+#E14.sc <- readRDS('/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/MouseNeocortex/RDS_files/E14_Arlotta_subset.RDS')
+```
+
+
+```{r}
+#DimPlot(E14.sc)
+```
+
+
+# ```{r}
+# #E14.sc$cellType <- Idents(E14.sc)
+# 
+# #transfer.anchors <- FindTransferAnchors(
+#   reference = E14.sc,
+#   query = atac.so,
+#   reduction = 'cca'
+# )
+# 
+# #predicted.labels <- TransferData(
+#   anchorset = transfer.anchors,
+#   refdata = E14.sc$cellType,
+#   weight.reduction = atac.so[['lsi']],
+#   dims = 2:30
+# )
+# 
+# #atac.so <- AddMetaData(object = atac.so, metadata = predicted.labels)
+# ```
+
+```{r}
+#library(ggplot2)
+#plot1 <- DimPlot(
+  #object = E14.sc,
+  #group.by = 'cellType',
+  #label = TRUE,
+  #repel = TRUE) + NoLegend() + ggtitle('scRNA-seq')
+
+#plot2 <- DimPlot(
+  #object = atac.so,
+  #group.by = 'predicted.id',
+  #label = TRUE,
+  #repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+#plot1 + plot2
+```
+```{r}
+bw.files <- list('ctrl 1' = '/Users/christinacomo/Desktop/ctrl1.macs.bw', 'ctrl 1.1' = '/Users/christinacomo/Desktop/ctrl1.bw', 'ctrl 3' = '/Users/christinacomo/Desktop/ctrl3.macs.bw', 'mut1' = '/Users/christinacomo/Desktop/mut1.macs.bw')
+```
+
+```{r}
+#plotting genomic plots 
+# set plotting order
+library(Seurat)
+DefaultAssay(atac.so) <- 'peaks'
+Idents(atac.so) <- 'orig.ident'
+
+saveRDS(atac.so, '/Users/christinacomo/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/10xVisium/GEO.GSM5091383_ATACseq/chromassay/atac.so.ident.rds')
+```
+
+# Seacr Peaks
+```{r}
+help(read_bigwig)
+library(plyranges)
+library(rtracklayer)
+library(GenomicRanges)
+```
+
+```{r}
+#control 1 from previous run
+#ctrl1 <- read_bigwig('/Users/christinacomo/Desktop/bigwif/MycCtrl_R1.bigWig')
+#seqlevelsStyle(ctrl1) <- "UCSC"
+#write_bigwig(ctrl1, file = '/Users/christinacomo/Desktop/ctrl1.bw')
+```
+
+```{r}
+# library(plyranges)
+# mut <- read_bigwig('/Users/christinacomo/Desktop/bigwif/MycMut_R3.bigWig')
+# seqlevelsStyle(mut) <- "UCSC"
+# write_bigwig(mut, file = '/Users/christinacomo/Desktop/mut3.bw')
+```
+
+
+```{r}
+bigwig.list <- list('Control' = '/Users/christinacomo/Desktop/ctrl1.bw', 'Foxc1 Mutant' = '/Users/christinacomo/Desktop/mut3.bw')
+```
+
+# plot rara control regions, Cyp26a1
+```{r}
+ranges.cyp26a1.1 <- StringToGRanges('chr19-37699442-37700466')
+ranges.cyp26a1 <- StringToGRanges('chr19-37697456-37698713')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr19-37699442-37700466',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = F,
+  ranges = ranges.cyp26a1.1,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+```
+
+```{r}
+#Rarb
+#Ptprz1, Tshz1, Abtb2, Spsb4, Ror2
+rarb.range <- StringToGRanges('chr14-16728769-16729905')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr14-16728769-16729905',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = TRUE,
+  ranges = rarb.range,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+)
+```
+
+```{r}
+#cyp1a1
+cyp1a1.range <- StringToGRanges('chr9-57699368-57702711')
+library(Signac)
+CoveragePlot(
+  object = atac.so,
+  region = 'chr9-57699000-57703711',
+  bigwig = bw.files,
+  bigwig.type = 'coverage',
+  peaks = FALSE,
+  ranges = cyp1a1.range,
+  bigwig.scale = 'separate'
+)
+```
+
+```{r}
+#Sox2ot
+getwd()
+ranges.Sox2ot <- StringToGRanges('chr3-34560263-34562983')
+ranges.show$color <- "orange"
+install.packages('tidyverse')
+library(tidyverse)
+library(ggplot2)
+library(tidyverse)
+
+ggsave(Sox2ot.cp, 'Sox2ot.jpg')
+
+Sox2ot.cp <- CoveragePlot(
+  object = atac.so,
+  region = 'chr3-34560000-34563000',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = FALSE,
+  ranges = ranges.Sox2ot,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+Sox2ot.cp
+```
+
+```{r}
+#ror2
+name: 53129341,53130099,53130606,53132691,53133519,53134009
+location: chr13:53129342-53135421
+score: 1000.0
+ranges.ror2 <- StringToGRanges('chr13-53129342-53135421')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr13-53129342-53135421',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = TRUE,
+  ranges = ranges.ror2,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+```
+
+```{r}
+name: 39953309,39955726
+location: chr19:39953310-39957103
+score: 1000.0
+ranges.cyp11b2 <- StringToGRanges('chr19-39953310-39957103')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr19-40103010-40104415',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = TRUE,
+  ranges = ranges.cyp11b2,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+```
+
+```{r}
+#Ptprz1
+name: 22983582,22983676,22985085,22985619,22986584
+location: chr6:22983583-22987989
+score: 1000.0
+ranges.ptprz1 <- StringToGRanges('chr6-22983583-22987989')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr6-22983583-22987989',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = TRUE,
+  ranges = ranges.ptprz1,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+```
+
+
+
+```{r}
+#abtb2
+name: 103636079,103636446,103637069
+location: chr2:103636080-103638179
+score: 1000.0
+ranges.abtb2 <- StringToGRanges('chr2-103636080-103638179')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr2-103636080-103638179',
+  bigwig = bigwig.list,
+  bigwig.type = 'coverage',
+  peaks = T,
+  ranges = ranges.abtb2,
+  bigwig.scale = 'separate',
+  extend.upstream = 1000,
+  extend.downstream = 1000
+  )
+```
+
+```{r}
+#Cyp26a1 use this
+name: 3816.13
+location: chr19:37699442-37700466
+score: 6.53168
+ranges.Sox2 <- StringToGRanges('chr19-37699442-37700466')
+
+library(Seurat)
+Idents(atac.so) <- 'orig.ident'
+library(Signac)
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr19-37699442-37700466',
+  peaks = TRUE,
+  extend.upstream = 1000,
+  extend.downstream = 1000,
+  ranges = ranges.Sox2
+  )
+```
+
+```{r}
+#Rarb use this
+name: 16965729,16966484
+location: chr14:16965730-16967189
+score: 1000.0
+ranges.rarb <- StringToGRanges('chr14-16965730-16967189')
+
+CoveragePlot(
+  object = atac.so,
+  region = 'chr14-16965730-16967189',
+  peaks = TRUE,
+  extend.upstream = 2000,
+  extend.downstream = 2000,
+  ranges = ranges.rarb
+  )
+```
+```{r}
+#Bcan use this
+ranges.rarb <- StringToGRanges('chr14-16965730-16967189')
+
+bigwig <-list('Control' = '/Users/christinacomo/Desktop/MycCtrl_R1.bigWig') 
+
+              
+CoveragePlot(
+  object = atac.so,
+  region = "Bcan",
+  peaks = TRUE,
+  extend.upstream = 500,
+  extend.downstream = 500
+)
+```
+
+
+
+
+
+
